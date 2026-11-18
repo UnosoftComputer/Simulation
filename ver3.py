@@ -1,19 +1,3 @@
-Анализ кода симулятора сражения (Grid War)
-Представленный код представляет собой качественную реализацию пошаговой тактической симуляции на клеточной карте с использованием библиотеки pygame. Архитектурно код четко разделен на две независимые части:
- * Модель (Battle, Group, Unit): чистая игровая логика (управление картой высот, состоянием юнитов, алгоритмами движения, расчетом линий видимости артиллерии, проверкой условий победы и тупиков) без привязки к графическому интерфейсу.
- * Интерфейс (App, UI, Panel): интерактивный редактор уровней, элементы управления симуляцией (пауза, шаг, скорость), отрисовка сетки, юнитов, вспышек и панели управления (immediate mode GUI).
-Реализованный функционал по фотографии
-В соответствии с заданием с фотографии в код были внесены следующие улучшения:
- * Вынос параметров в переменные:
-   * Дальность стрельбы артиллерии теперь гибко настраивается через базовую дальность (ART_BASE_RANGE) и коэффициент прироста от высоты (ART_HEIGHT_SCALE).
- * Новые кисти для расстановки и редактирования рельефа:
-   * Помимо стандартного Круга (disc), добавлены три новые формы кисти:
-     * Квадрат (square) — сплошная квадратная область.
-     * Каре (hollow_square) — полый квадрат (рамка), удобный для построения оборонительных порядков.
-     * Линия (line) — горизонтальная линия для быстрого создания шеренг войск или валов.
-   * В интерфейс редактора добавлен удобный переключатель форм кисти.
-Полный обновленный код симулятора (Main1test_fixed.py)
-Ниже представлен итоговый код со всеми исправлениями, добавленными кистями и вынесенными параметрами:
 # -*- coding: utf-8 -*-
 """
 Grid War - симулятор сражения на клеточной карте (pygame).
@@ -29,9 +13,13 @@ from collections import deque
 
 import pygame
 
+# Сглаживание при масштабировании окна (SCALED): 0 - пиксели, 1 - линейное.
+# Ставим ДО создания окна, иначе в полный экран картинка "мылится" кубиками.
+os.environ.setdefault('SDL_RENDER_SCALE_QUALITY', '1')
+
 # ============================================================ настройки
-GRID_W, GRID_H = 28, 18          # размер карты в клетках
-CELL = 30                        # размер клетки в пикселях
+GRID_W, GRID_H = 50, 50          # размер карты в клетках
+CELL = 18                        # размер клетки в пикселях (больше - чётче картинка)
 MAX_HEIGHT = 9                   # высоты 0..MAX_HEIGHT
 MAX_CLIMB = 2                    # перепад выше этого - обрыв (поставьте 9, чтобы отключить)
 MAX_GROUPS = 16                  # групп на армию
@@ -39,14 +27,13 @@ MAX_N = 30                       # максимум n
 MAX_BRUSH = 8                    # максимальный радиус кисти
 
 # Вынесенные параметры дальности артиллерии
-ART_BASE_RANGE = 2               # базовая дальность артиллерии на высоте 0
-ART_HEIGHT_SCALE = 1             # прирост дальности за каждый уровень высоты (range = base + h * scale)
+ART_BASE_RANGE = 6               # базовая дальность артиллерии на высоте 0
+ART_HEIGHT_SCALE = 3             # прирост дальности за каждый уровень высоты (range = base + h * scale)
 
-RANDOM_MOVE_CHANCE = 0.02        # шанс шагнуть в случайную сторону вместо приказа
-SIDESTEP_CHANCE = 0.4            # шанс обойти преграду, если путь загорожен своим
+SIDESTEP_CHANCE = 0.3            # шанс обойти преграду, если путь загорожен своим (только режим "к точке")
 SPEED_MULT = {'infantry': 1.0, 'cavalry': 1.5, 'artillery': 1.0}
 DEFAULT_N = 2
-UNDO_LIMIT = 100
+UNDO_LIMIT = 5
 STALEMATE_TICKS = 300            # столько тиков без потерь - считаем тупиком
 
 DIRS = {'N': (0, -1), 'E': (1, 0), 'S': (0, 1), 'W': (-1, 0)}
@@ -349,30 +336,16 @@ class Battle:
         g = self.groups[u.army][u.group]
         if g.mode == 'defense':
             return
-        if random.random() < RANDOM_MOVE_CHANCE:
-            dirs = list(DIRS.values())
-            random.shuffle(dirs)
-            for dx, dy in dirs:
-                if self.try_step(u, dx, dy):
-                    break
-            return
         if g.mode == 'direction':
             self.move_direction(u, g)
         else:
             self.move_to_point(u, g)
 
     def move_direction(self, u, g):
+        """Строго в заданную сторону. Упёрлись в край, обрыв или юнита - стоим
+        (отряд останавливается линией у преграды)."""
         dx, dy = DIRS[g.direction]
-        if not (0 <= u.x + dx < GRID_W and 0 <= u.y + dy < GRID_H):
-            return
-        if self.try_step(u, dx, dy):
-            return
-        if random.random() < SIDESTEP_CHANCE:
-            side = [(dy, dx), (-dy, -dx)]
-            random.shuffle(side)
-            for sx, sy in side:
-                if self.try_step(u, sx, sy):
-                    return
+        self.try_step(u, dx, dy)
 
     def move_to_point(self, u, g):
         if not g.target:
@@ -542,7 +515,7 @@ TOOL_HELP = {
     'unit': 'ЛКМ - поставить юнитов в выбранную группу, ПКМ - стереть. Колесо - радиус кисти.',
     'target': 'ЛКМ - задать точку для выбранной группы, ПКМ - убрать точку.',
 }
-SIM_HELP = 'Пробел - пауза, N - один тик, R - сначала, Esc - вернуться в редактор.'
+SIM_HELP = 'Пробел - пауза, N - один тик, R - сначала, Esc - вернуться в редактор, F11 - полный экран.'
 
 _STOPS = [(0, (80, 160, 80)), (3, (210, 200, 90)), (6, (175, 120, 70)), (9, (235, 235, 235))]
 
@@ -703,6 +676,9 @@ class Panel:
 
 
 def draw_shape(surf, utype, cx, cy, r, col, outline=(0, 0, 0), width=1):
+    if 1:
+        width=-1
+        
     if utype == 'infantry':
         rr = int(r * 0.75)
         rect = (cx - rr, cy - rr, 2 * rr, 2 * rr)
@@ -733,6 +709,7 @@ class App:
         self.speed_i = 3
         self.acc = 0.0
         self.stall_seen = None
+        self.fullscreen = False
         # Настройки редактора
         self.tool = 'terrain'
         self.army = 0
@@ -962,6 +939,16 @@ class App:
         self.clamp_sel()
         self.say('Загружено' + (' (симуляция на паузе)' if in_sim else ''))
 
+    def toggle_fullscreen(self):
+        self.fullscreen = not self.fullscreen
+        flags = getattr(pygame, 'SCALED', 0) | getattr(pygame, 'RESIZABLE', 0)
+        if self.fullscreen:
+            flags |= pygame.FULLSCREEN
+        try:
+            self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+        except pygame.error:
+            self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+
     def handle(self, e):
         if e.type == pygame.QUIT:
             self.quit = True
@@ -996,6 +983,8 @@ class App:
             self.save()
         elif ctrl and k == pygame.K_l:
             self.load()
+        elif k == pygame.K_F11:
+            self.toggle_fullscreen()
         elif k == pygame.K_SPACE:
             self.toggle_run()
         elif self.mode == 'sim':
@@ -1049,7 +1038,7 @@ class App:
               self.tool, self.set_tool,
               hints={'terrain': TOOL_HELP['terrain'], 'unit': TOOL_HELP['unit'],
                      'target': TOOL_HELP['target']})
-        
+
         if self.tool != 'target':
             p.heading('Форма кисти')
             p.seg([(s, BRUSH_RU[s]) for s in BRUSH_SHAPES],
@@ -1099,7 +1088,8 @@ class App:
         p.seg([(m, MODE_RU[m]) for m in GROUP_MODES], g.mode,
               lambda m: self.do(self.set_mode, m),
               hints={'defense': 'Стоит на месте, бьёт соседних врагов.',
-                     'direction': 'Бьёт врага рядом, иначе идёт в заданную сторону.',
+                     'direction': 'Бьёт врага рядом, иначе идёт в заданную сторону '
+                                  'и останавливается у преграды/края.',
                      'point': 'Бьёт врага рядом, иначе идёт к точке в обход обрывов.'})
         if g.mode == 'direction':
             p.seg([(d, DIR_RU[d]) for d in 'NESW'], g.direction,
@@ -1275,8 +1265,8 @@ class App:
             shade = pygame.Surface((MAP_W, 70), pygame.SRCALPHA)
             shade.fill((0, 0, 0, 170))
             s.blit(shade, (0, MAP_H // 2 - 35))
-            text = 'Ничья' if w == -1 else 'Победа пехоты армия %d' % (w + 1) if w >= 0 else ''
-            img = FONTS['big'].render('Ничья' if w == -1 else 'Победа армия %d' % (w + 1), True, (255, 255, 255) if w == -1 else ARMY_COLORS[w])
+            img = FONTS['big'].render('Ничья' if w == -1 else 'Победа армия %d' % (w + 1), True,
+                                      (255, 255, 255) if w == -1 else ARMY_COLORS[w])
             s.blit(img, img.get_rect(center=(MAP_W // 2, MAP_H // 2)))
 
     def cell_info(self, cell):
@@ -1342,7 +1332,7 @@ def main():
         screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
     except pygame.error:
         screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption('Grid War - симуляция сражения')
+    pygame.display.set_caption('Grid War - симуляция сражения   (F11 - полный экран)')
     app = App(screen)
     clock = pygame.time.Clock()
     while not app.quit:
@@ -1357,4 +1347,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
